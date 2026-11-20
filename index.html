@@ -26,7 +26,7 @@ img{max-width:100%;max-height:240px;display:block;margin:.5rem 0}li{margin:.6rem
 <h2>Start an attempt</h2>
 <p>Use a practice repository on GitHub. Upload screenshots for GitHub tasks and type your answers for Git command questions.</p>
 <form id="setup"><label for="student">Name</label><input id="student" maxlength="100" required autocomplete="name"><button>Start test</button></form>
-<p class="muted">Select Check answer after each question. Missed questions come back until you get them right. Save your score when you finish.</p>
+<p class="muted">Select Check answer after each question. If you miss a question, use the hint and try again before moving on. Save your score when you finish.</p>
 </section>
 <section id="quiz" hidden>
 <div class="tracker"><span id="step"></span><span id="category"></span></div>
@@ -54,13 +54,13 @@ const shuffle = values => {
   return items;
 };
 const commandBank = [
-  ["Check repository status", "Which Git command shows the working tree status?", /^git status(?: (?:-s|--short))?$/i, "git status"],
-  ["Stage the README", "Which Git command stages only README.md from the repository root?", /^git add (?:-- )?["']?(?:\.\/)?README\.md["']?$/i, "git add README.md"],
-  ["Show commit history", "Which Git command displays the commit history?", /^git log(?: --oneline)?$/i, "git log"],
-  ["List remotes and URLs", "Which Git command lists configured remotes with their fetch and push URLs?", /^git remote (?:-v|--verbose)$/i, "git remote -v"],
-  ["Switch to main", "Which Git command switches to an existing branch named main?", /^git (?:switch|checkout) main$/i, "git switch main"],
-  ["Show the current branch", "Which Git command prints the current branch name?", /^(?:git branch --show-current|git rev-parse --abbrev-ref HEAD|git symbolic-ref --short HEAD)$/i, "git branch --show-current"],
-  ["Clone a repository", "Which Git command copies this repository to your computer? Use the full HTTPS URL https://github.com/octocat/Hello-World.git.", /^git clone ["']?https:\/\/github\.com\/octocat\/Hello-World(?:\.git)?\/?["']?$/i, "git clone https://github.com/octocat/Hello-World.git"]
+  ["Check repository status", "Which Git command shows the working tree status?", /^git status(?: (?:-s|--short))?$/i, "git status", "Think of the command that reports staged and unstaged changes."],
+  ["Stage the README", "Which Git command stages only README.md from the repository root?", /^git add (?:-- )?["']?(?:\.\/)?README\.md["']?$/i, "git add README.md", "Use the staging command with README.md as the only file."],
+  ["Show commit history", "Which Git command displays the commit history?", /^git log(?: --oneline)?$/i, "git log", "Look for the command that lists past commits."],
+  ["List remotes and URLs", "Which Git command lists configured remotes with their fetch and push URLs?", /^git remote (?:-v|--verbose)$/i, "git remote -v", "Use the remote command with its verbose option to show URLs."],
+  ["Switch to main", "Which Git command switches to an existing branch named main?", /^git (?:switch|checkout) main$/i, "git switch main", "Use the branch-switching command followed by main."],
+  ["Show the current branch", "Which Git command prints the current branch name?", /^(?:git branch --show-current|git rev-parse --abbrev-ref HEAD|git symbolic-ref --short HEAD)$/i, "git branch --show-current", "Use the branch command with the option that shows only the current branch."],
+  ["Clone a repository", "Which Git command copies this repository to your computer? Use the full HTTPS URL https://github.com/octocat/Hello-World.git.", /^git clone ["']?https:\/\/github\.com\/octocat\/Hello-World(?:\.git)?\/?["']?$/i, "git clone https://github.com/octocat/Hello-World.git", "Use the clone command followed by the full HTTPS URL shown above."]
 ];
 let attempt, previewUrl, ocrLoader, ocrWorker, nextAction;
 const normalize = text => text.trim().replace(/\s+/g, " ");
@@ -82,7 +82,7 @@ function buildAttempt() {
     { title:"Edit the README", prompt:"On the default branch, edit README.md, add the assigned Markdown heading, and commit the change. Open the rendered README on GitHub.", spec:"Heading: " + heading + " · Repository: " + repo, tokens:[repo,heading], guidance:"Show the repository name and the rendered heading together." },
     { title:"Create a branch", prompt:"Create the assigned branch in your repository. Open the branch on GitHub with its name visible.", spec:"Branch: " + branch + " · Repository: " + repo, tokens:[repo,branch], guidance:"Show the repository name and the selected branch name together." }
   ];
-  const commands = shuffle(commandBank).slice(0, 3).map(([title,prompt,pattern,example]) => ({title,prompt,pattern,example,spec:"Enter one Git command without the terminal prompt."}));
+  const commands = shuffle(commandBank).slice(0, 3).map(([title,prompt,pattern,example,hint]) => ({title,prompt,pattern,example,hint,spec:"Enter one Git command without the terminal prompt."}));
   return {number, name:byId("student").value.trim(), started:new Date(), queue:[practical[0], ...shuffle([...practical.slice(1), ...commands])], answers:[]};
 }
 function clearPreview() {
@@ -155,25 +155,30 @@ async function recognize(file) {
   return result.data.text;
 }
 function record(correct) {
-  setBusy(true);
+  const question = attempt.queue[0];
   const status = byId("status");
-  status.textContent = correct ? "Correct." : "Try again when this question comes back.";
-  status.className = correct ? "good" : "bad";
+  const submit = byId("submit");
+  if (!correct) {
+    question.retries = (question.retries || 0) + 1;
+    status.className = "bad";
+    status.textContent = question.pattern
+      ? "Try again. " + question.hint
+      : "Screenshot did not match. " + question.guidance + " Upload a clear screenshot and try again.";
+    byId("category").textContent = "Retry";
+    submit.textContent = "Check again";
+    byId(question.pattern ? "typed" : "image").focus();
+    return;
+  }
+
+  setBusy(true);
+  status.className = "good";
+  status.textContent = "Correct.";
   nextAction = () => {
-    const question = attempt.queue.shift();
-    if (correct) {
-      attempt.answers.push(question);
-    } else {
-      question.retries = (question.retries || 0) + 1;
-      attempt.queue.push(question);
-    }
+    attempt.answers.push(attempt.queue.shift());
     renderQuestion();
   };
-  const submit = byId("submit");
   submit.disabled = false;
-  submit.textContent = attempt.queue.length === 1
-    ? (correct ? "See score" : "Retry question")
-    : "Next question";
+  submit.textContent = attempt.queue.length === 1 ? "See score" : "Next question";
   submit.focus();
 }
 function setBusy(busy) {
@@ -197,6 +202,7 @@ byId("image").addEventListener("change",() => {
 });
 byId("answer").addEventListener("submit", async event => {
   event.preventDefault();
+  if (byId("submit").disabled) return;
   if (nextAction) return nextAction();
   const question = attempt.queue[0];
   const status = byId("status");
@@ -227,11 +233,7 @@ byId("answer").addEventListener("submit", async event => {
     clearTimeout(timer);
     setBusy(false);
   }
-  const correct = checkEvidence(question,evidence);
-  record(correct);
-  if (!correct) {
-    status.textContent = "The screenshot did not match. Try a clearer screenshot when this question comes back.";
-  }
+  record(checkEvidence(question,evidence));
 });
 byId("save").onclick = () => {
   const contents = ["GitHub Intro Assessment", attemptDetails(), scoreSummary(), "",
@@ -255,4 +257,3 @@ byId("restart").onclick = () => {
 </script>
 </body>
 </html>
-
