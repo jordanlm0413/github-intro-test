@@ -64,12 +64,13 @@ const commandBank = [
 ];
 let attempt, previewUrl, ocrLoader, ocrWorker, nextAction;
 const normalize = text => text.trim().replace(/\s+/g, " ");
-function checkEvidence(question, value) {
-  if (question.pattern) return question.pattern.test(normalize(value));
-  const clean = normalize(value).toLowerCase().replace(/[‐‑‒–−]/g, "-");
-  return question.tokens.every(token => {
-    const escaped = token.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp("(^|[^a-z0-9_-])" + escaped + "(?=$|[^a-z0-9_-])").test(clean);
+function missingScreenshotText(question, value) {
+  const clean = normalize(value.normalize("NFKC")).toLowerCase()
+    .replace(/[‐‑‒–—−]/g, "-")
+    .replace(/\s*([.-])\s*/g, "$1");
+  return question.tokens.filter(token => {
+    const escaped = token.toLowerCase().replace(/[.*+?^$()|[\]\\]/g, "\\$&");
+    return !new RegExp("(^|[^a-z0-9_.-])" + escaped + "(?=$|[^a-z0-9_.-])").test(clean);
   });
 }
 function buildAttempt() {
@@ -78,7 +79,7 @@ function buildAttempt() {
   const branch = "practice-" + number;
   const heading = shuffle(["Git Practice", "Learning GitHub", "My Git Lab"])[0];
   const practical = [
-    { title:"Create a repository", prompt:"On GitHub, create your assigned repository and initialize it with a README.", spec:"Repository: " + repo + " · File: README.md", tokens:[repo,"README.md"], guidance:"Show the repository name and README.md in the file list." },
+    { title:"Create a repository", prompt:"On GitHub, create a repository using the exact name below. Turn on Add README before creating it. Then open the new repository’s Code tab.", spec:"Repository: " + repo + " · File: README.md", tokens:[repo,"README.md"], guidance:"Zoom in and capture the repository name at the top and README.md in the file list." },
     { title:"Edit the README", prompt:"On the default branch, edit README.md, add the assigned Markdown heading, and commit the change. Open the rendered README on GitHub.", spec:"Heading: " + heading + " · Repository: " + repo, tokens:[repo,heading], guidance:"Show the repository name and the rendered heading together." },
     { title:"Create a branch", prompt:"Create the assigned branch in your repository. Open the branch on GitHub with its name visible.", spec:"Branch: " + branch + " · Repository: " + repo, tokens:[repo,branch], guidance:"Show the repository name and the selected branch name together." }
   ];
@@ -148,13 +149,18 @@ function loadOCR() {
   }).catch(error => { ocrLoader = null; throw error; });
   return ocrLoader;
 }
-async function recognize(file) {
+async function recognize(file, question) {
   await loadOCR();
   if (!ocrWorker) ocrWorker = await Tesseract.createWorker("eng");
-  const result = await ocrWorker.recognize(file);
-  return result.data.text;
+  await ocrWorker.setParameters({tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT});
+  const sparse = (await ocrWorker.recognize(file)).data.text;
+  if (!missingScreenshotText(question, sparse).length) return sparse;
+
+  await ocrWorker.setParameters({tessedit_pageseg_mode: Tesseract.PSM.AUTO});
+  const full = (await ocrWorker.recognize(file)).data.text;
+  return sparse + "\n\n" + full;
 }
-function record(correct) {
+function record(correct, missingText = []) {
   const question = attempt.queue[0];
   const status = byId("status");
   const submit = byId("submit");
@@ -163,7 +169,7 @@ function record(correct) {
     status.className = "bad";
     status.textContent = question.pattern
       ? "Try again. " + question.hint
-      : "Screenshot did not match. " + question.guidance + " Upload a clear screenshot and try again.";
+      : "Could not find " + missingText.join(" and ") + " in the screenshot. " + question.guidance;
     byId("category").textContent = "Retry";
     submit.textContent = "Check again";
     byId(question.pattern ? "typed" : "image").focus();
@@ -210,7 +216,7 @@ byId("answer").addEventListener("submit", async event => {
   if (question.pattern) {
     const text = byId("typed").value.trim();
     if (!text) { status.textContent = "Enter a Git command."; return; }
-    record(checkEvidence(question,text));
+    record(question.pattern.test(normalize(text)));
     return;
   }
   const file = byId("image").files[0];
@@ -223,8 +229,8 @@ byId("answer").addEventListener("submit", async event => {
   let timer;
   let evidence;
   try {
-    evidence = await Promise.race([recognize(file), new Promise((_,reject) => {
-      timer = setTimeout(() => reject(new Error("OCR timed out")), 45000);
+    evidence = await Promise.race([recognize(file, question), new Promise((_,reject) => {
+      timer = setTimeout(() => reject(new Error("OCR timed out")), 90000);
     })]);
   } catch {
     status.textContent = "Could not read the screenshot. Try checking it again.";
@@ -233,7 +239,8 @@ byId("answer").addEventListener("submit", async event => {
     clearTimeout(timer);
     setBusy(false);
   }
-  record(checkEvidence(question,evidence));
+  const missingText = missingScreenshotText(question, evidence);
+  record(missingText.length === 0, missingText);
 });
 byId("save").onclick = () => {
   const contents = ["GitHub Intro Assessment", attemptDetails(), scoreSummary(), "",
