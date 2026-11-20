@@ -24,24 +24,23 @@ img{max-width:100%;max-height:240px;display:block;margin:.5rem 0}li{margin:.6rem
 <main>
 <section id="start">
 <h2>Start an attempt</h2>
-<p>Each attempt assigns a new repository name, shuffles independent tasks, and selects three Git command questions. Use a practice repository on GitHub.</p>
+<p>Use a practice repository on GitHub. Upload screenshots for GitHub tasks and type your answers for Git command questions.</p>
 <form id="setup"><label for="student">Name</label><input id="student" maxlength="100" required autocomplete="name"><button>Start test</button></form>
-<p class="muted">Screenshot grading reads visible text in your browser. Typed evidence is also accepted. Review your results at the end and save a PDF for your instructor.</p>
+<p class="muted">Select Check answer after each question. Missed questions come back until you get them right. Save your score when you finish.</p>
 </section>
 <section id="quiz" hidden>
 <div class="tracker"><span id="step"></span><span id="category"></span></div>
-<progress id="progress" max="6" value="1" aria-label="Current question"></progress>
+<progress id="progress" max="6" value="0" aria-label="Questions answered correctly"></progress>
 <h2 id="title" tabindex="-1"></h2><p id="prompt"></p><p id="spec" class="spec"></p>
 <form id="answer">
-<fieldset id="methods"><legend>Evidence format</legend><label class="choice"><input type="radio" name="method" value="text" checked> Type evidence</label><label class="choice"><input type="radio" name="method" value="image"> Upload screenshot</label></fieldset>
 <div id="textPane"><label id="answerLabel" for="typed">Your answer</label><textarea id="typed" maxlength="4000"></textarea></div>
 <div id="imagePane" hidden><label for="image">Screenshot (PNG, JPEG, or WebP)</label><input id="image" type="file" accept="image/png,image/jpeg,image/webp" aria-describedby="imageHelp"><p id="imageHelp" class="muted">Use a clear crop that shows the requested text. The image is processed on this device.</p><img id="preview" alt="Selected screenshot" hidden></div>
 <p id="status" role="status"></p>
-<div class="actions"><button id="submit">Submit answer</button><button id="skip" type="button" class="secondary">Skip question</button></div>
+<div class="actions"><button id="submit">Check answer</button></div>
 </form>
 </section>
-<section id="results" hidden><h2 id="score" tabindex="-1"></h2><p id="receipt"></p><ol id="review"></ol><div class="actions"><button id="print">Print / Save PDF</button><button class="secondary" id="restart">New attempt</button></div></section>
-<footer class="muted"><p>Scores stay in this browser session. Submit your saved result through your class assignment.</p></footer>
+<section id="results" hidden><h2 id="score" tabindex="-1"></h2><p id="receipt"></p><ol id="review"></ol><div class="actions"><button id="save">Save score</button><button id="print" class="secondary">Print / Save PDF</button><button class="secondary" id="restart">New attempt</button></div></section>
+<footer class="muted"><p>Save your score before closing this page. Submit the downloaded file through your class assignment.</p></footer>
 </main>
 <script>
 "use strict";
@@ -63,7 +62,7 @@ const commandBank = [
   ["Show the current branch", "Which Git command prints the current branch name?", /^(?:git branch --show-current|git rev-parse --abbrev-ref HEAD|git symbolic-ref --short HEAD)$/i, "git branch --show-current"],
   ["Clone a repository", "Which Git command copies this repository to your computer? Use the full HTTPS URL https://github.com/octocat/Hello-World.git.", /^git clone ["']?https:\/\/github\.com\/octocat\/Hello-World(?:\.git)?\/?["']?$/i, "git clone https://github.com/octocat/Hello-World.git"]
 ];
-let attempt, previewUrl, ocrLoader, ocrWorker;
+let attempt, previewUrl, ocrLoader, ocrWorker, nextAction;
 const normalize = text => text.trim().replace(/\s+/g, " ");
 function checkEvidence(question, value) {
   if (question.pattern) return question.pattern.test(normalize(value));
@@ -84,7 +83,7 @@ function buildAttempt() {
     { title:"Create a branch", prompt:"Create the assigned branch in your repository. Open the branch on GitHub with its name visible.", spec:"Branch: " + branch + " · Repository: " + repo, tokens:[repo,branch], guidance:"Show the repository name and the selected branch name together." }
   ];
   const commands = shuffle(commandBank).slice(0, 3).map(([title,prompt,pattern,example]) => ({title,prompt,pattern,example,spec:"Enter one Git command without the terminal prompt."}));
-  return {number, name:byId("student").value.trim(), started:new Date(), tasks:[practical[0], ...shuffle([...practical.slice(1), ...commands])], answers:[]};
+  return {number, name:byId("student").value.trim(), started:new Date(), queue:[practical[0], ...shuffle([...practical.slice(1), ...commands])], answers:[]};
 }
 function clearPreview() {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -92,61 +91,51 @@ function clearPreview() {
   byId("preview").removeAttribute("src");
   byId("preview").hidden = true;
 }
-function setMode() {
-  const screenshot = byId("answer").elements.method.value === "image";
-  byId("textPane").hidden = screenshot;
-  byId("imagePane").hidden = !screenshot;
-  byId("status").textContent = "";
-}
 function renderQuestion() {
-  const index = attempt.answers.length;
-  if (index === attempt.tasks.length) return renderResults();
-  const question = attempt.tasks[index];
+  if (attempt.queue.length === 0) return renderResults();
+  const question = attempt.queue[0];
+  nextAction = null;
+  setBusy(false);
   byId("answer").reset();
   clearPreview();
-  setMode();
-  byId("methods").hidden = Boolean(question.pattern);
-  byId("step").textContent = "Question " + (index + 1) + " of " + attempt.tasks.length;
-  byId("progress").value = index + 1;
-  byId("category").textContent = question.pattern ? "Git command" : "GitHub task";
+  byId("status").textContent = "";
+  byId("status").className = "";
+  byId("submit").textContent = "Check answer";
+  byId("textPane").hidden = !question.pattern;
+  byId("imagePane").hidden = Boolean(question.pattern);
+  byId("step").textContent = attempt.answers.length + " of 6 correct";
+  byId("progress").value = attempt.answers.length;
+  byId("category").textContent = question.retries ? "Retry" : question.pattern ? "Git command" : "GitHub task";
   byId("title").textContent = question.title;
   byId("prompt").textContent = question.prompt;
   byId("spec").textContent = question.spec;
-  byId("answerLabel").textContent = question.pattern ? "Your command" : "Type or paste the requested text from GitHub";
-  byId("imageHelp").textContent = (question.guidance || "") + " Use a clear crop. The image is processed on this device.";
+  byId("answerLabel").textContent = "Your command";
+  byId("imageHelp").textContent = question.guidance ? question.guidance + " Use a clear crop." : "";
   byId("title").focus();
+}
+function scoreSummary() {
+  const firstTry = attempt.answers.filter(question => !question.retries).length;
+  return "Completed: 6 / 6 · Correct on first try: " + firstTry + " / 6";
+}
+function attemptDetails() {
+  return attempt.name + " · Attempt " + attempt.number + " · " + attempt.started.toLocaleString();
+}
+function questionResult(question) {
+  return question.title + " · Correct after " + (question.retries || 0) + " retries";
 }
 function renderResults() {
   byId("quiz").hidden = true;
+  clearPreview();
   byId("results").hidden = false;
-  const points = attempt.answers.filter(answer => answer.state === "correct").length;
-  const pending = attempt.answers.filter(answer => answer.state === "review").length;
-  byId("score").textContent = points + " / " + attempt.tasks.length + " points" + (pending ? " · " + pending + " awaiting review" : "");
-  byId("receipt").textContent = attempt.name + " · Attempt " + attempt.number + " · " + attempt.started.toLocaleString();
+  byId("score").textContent = scoreSummary();
+  byId("receipt").textContent = attemptDetails();
   const review = byId("review");
   review.replaceChildren();
-  attempt.answers.forEach(({state, method, evidence, file}, index) => {
-    const question = attempt.tasks[index];
+  for (const question of attempt.answers) {
     const item = document.createElement("li");
-    const label = document.createElement("strong");
-    label.className = state === "correct" ? "good" : state === "review" ? "warn" : "bad";
-    label.textContent = question.title + " · " + ({correct:"Correct", incorrect:"Incorrect", skipped:"Skipped", review:"Screenshot needs review"})[state];
-    const detail = document.createElement("div");
-    detail.textContent = question.example ? "Example answer: " + question.example : question.spec;
-    item.append(label, detail);
-    if (evidence) {
-      const entry = document.createElement("div");
-      entry.textContent = (method === "image" ? "Text read: " : "Submitted: ") + evidence.slice(0, 400);
-      item.append(entry);
-    }
-    if (file) {
-      const image = document.createElement("img");
-      image.src = URL.createObjectURL(file);
-      image.alt = "Submitted screenshot";
-      item.append(image);
-    }
+    item.textContent = questionResult(question);
     review.append(item);
-  });
+  }
   byId("score").focus();
 }
 function loadOCR() {
@@ -165,9 +154,27 @@ async function recognize(file) {
   const result = await ocrWorker.recognize(file);
   return result.data.text;
 }
-function record(state, method, evidence, file) {
-  attempt.answers.push({state, method, evidence, file});
-  renderQuestion();
+function record(correct) {
+  setBusy(true);
+  const status = byId("status");
+  status.textContent = correct ? "Correct." : "Try again when this question comes back.";
+  status.className = correct ? "good" : "bad";
+  nextAction = () => {
+    const question = attempt.queue.shift();
+    if (correct) {
+      attempt.answers.push(question);
+    } else {
+      question.retries = (question.retries || 0) + 1;
+      attempt.queue.push(question);
+    }
+    renderQuestion();
+  };
+  const submit = byId("submit");
+  submit.disabled = false;
+  submit.textContent = attempt.queue.length === 1
+    ? (correct ? "See score" : "Retry question")
+    : "Next question";
+  submit.focus();
 }
 function setBusy(busy) {
   for (const control of byId("answer").elements) control.disabled = busy;
@@ -180,7 +187,6 @@ byId("setup").addEventListener("submit", event => {
   byId("quiz").hidden = false;
   renderQuestion();
 });
-byId("methods").addEventListener("change",setMode);
 byId("image").addEventListener("change",() => {
   clearPreview();
   const file = byId("image").files[0];
@@ -191,13 +197,14 @@ byId("image").addEventListener("change",() => {
 });
 byId("answer").addEventListener("submit", async event => {
   event.preventDefault();
-  const question = attempt.tasks[attempt.answers.length];
-  const method = byId("answer").elements.method.value;
+  if (nextAction) return nextAction();
+  const question = attempt.queue[0];
   const status = byId("status");
-  if (method === "text") {
+  status.className = "";
+  if (question.pattern) {
     const text = byId("typed").value.trim();
-    if (!text) { status.textContent = "Enter an answer or skip this question."; return; }
-    record(checkEvidence(question,text) ? "correct" : "incorrect",method,text);
+    if (!text) { status.textContent = "Enter a Git command."; return; }
+    record(checkEvidence(question,text));
     return;
   }
   const file = byId("image").files[0];
@@ -214,19 +221,32 @@ byId("answer").addEventListener("submit", async event => {
       timer = setTimeout(() => reject(new Error("OCR timed out")), 45000);
     })]);
   } catch {
-    status.textContent = "Screenshot reading is unavailable. Try again or switch to typed evidence.";
+    status.textContent = "Could not read the screenshot. Try checking it again.";
     return;
   } finally {
     clearTimeout(timer);
     setBusy(false);
   }
-  const matches = checkEvidence(question,evidence);
-  record(matches ? "correct" : "review",method,evidence,file);
+  const correct = checkEvidence(question,evidence);
+  record(correct);
+  if (!correct) {
+    status.textContent = "The screenshot did not match. Try a clearer screenshot when this question comes back.";
+  }
 });
-byId("skip").onclick = () => record("skipped");
+byId("save").onclick = () => {
+  const contents = ["GitHub Intro Assessment", attemptDetails(), scoreSummary(), "",
+    ...attempt.answers.map(questionResult)].join("\n");
+  const url = URL.createObjectURL(new Blob([contents], {type:"text/plain;charset=utf-8"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "github-assessment-score-" + attempt.number + ".txt";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 byId("print").onclick = () => window.print();
 byId("restart").onclick = () => {
-  for (const image of byId("review").querySelectorAll("img")) URL.revokeObjectURL(image.src);
   byId("review").replaceChildren();
   byId("results").hidden = true;
   byId("start").hidden = false;
@@ -235,3 +255,4 @@ byId("restart").onclick = () => {
 </script>
 </body>
 </html>
+
